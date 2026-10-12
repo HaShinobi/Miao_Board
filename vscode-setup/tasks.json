@@ -1,0 +1,61 @@
+{
+  // COPY THIS FILE TO:  <project>/.vscode/tasks.json
+  //
+  // Build tasks for the Miao_board STM32H723 firmware.
+  // Ctrl+Shift+B runs "Build (make all)".
+  //
+  // Requires arm-none-eabi-gcc and make on PATH. If you already have
+  // STM32CubeIDE installed you do NOT need to install anything - both ship
+  // with it; see the note at the bottom for the folders to add to PATH.
+  "version": "2.0.0",
+  "options": {
+    "cwd": "${workspaceFolder}"
+  },
+  "presentation": {
+    "reveal": "always",
+    "panel": "shared",
+    "clear": true
+  },
+  "tasks": [
+    {
+      "label": "Build (make all)",
+      "type": "shell",
+      "command": "make",
+      "args": ["-j4", "all"],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"],
+      "detail": "Compile to build/Miao_board.elf / .hex / .bin"
+    },
+    {
+      "label": "Clean",
+      "type": "shell",
+      "command": "make",
+      "args": ["clean"],
+      "group": "build",
+      "problemMatcher": [],
+      "detail": "Delete the build directory"
+    },
+    {
+      // NOTE: the whole thing is one command string - passing "&&" as an
+      // argument does NOT chain commands, it just hands make a bad target.
+      "label": "Rebuild (clean + all)",
+      "type": "shell",
+      "command": "make clean && make -j4 all",
+      "group": "build",
+      "problemMatcher": ["$gcc"],
+      "detail": "Full rebuild - also the fix for 'file format not recognized'"
+    }
+  ]
+
+  // ---------------------------------------------------------------------
+  // If "make is not recognized", add these two STM32CubeIDE folders to PATH
+  // (version numbers on your machine will differ):
+  //
+  //   C:\ST\STM32CubeIDE_*\STM32CubeIDE\plugins\
+  //       com.st.stm32cube.ide.mcu.externaltools.make.win32_*\tools\bin
+  //   C:\ST\STM32CubeIDE_*\STM32CubeIDE\plugins\
+  //       com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.*\tools\bin
+  //
+  // Restart VS Code afterwards so it picks up the new PATH.
+  // ---------------------------------------------------------------------
+}

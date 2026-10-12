@@ -1,0 +1,35 @@
+{
+  // COPY THIS FILE TO:  <project>/.vscode/c_cpp_properties.json
+  //
+  // IntelliSense for the STM32H723 firmware. Mirrors the include paths and
+  // defines the Makefile passes to arm-none-eabi-gcc, so "go to definition"
+  // and the error squiggles match what actually compiles.
+  "version": 4,
+  "configurations": [
+    {
+      "name": "STM32H723",
+      "compilerPath": "arm-none-eabi-gcc",
+      "cStandard": "c11",
+      "cppStandard": "c++17",
+      "intelliSenseMode": "gcc-arm",
+      "includePath": [
+        "${workspaceFolder}/Core/Inc",
+        "${workspaceFolder}/Drivers/STM32H7xx_HAL_Driver/Inc",
+        "${workspaceFolder}/Drivers/STM32H7xx_HAL_Driver/Inc/Legacy",
+        "${workspaceFolder}/Drivers/CMSIS/Device/ST/STM32H7xx/Include",
+        "${workspaceFolder}/Drivers/CMSIS/Include"
+      ],
+      "defines": [
+        "USE_HAL_DRIVER",
+        "STM32H723xx"
+      ],
+      "browse": {
+        "path": [
+          "${workspaceFolder}/Core",
+          "${workspaceFolder}/Drivers"
+        ],
+        "limitSymbolsToIncludedHeaders": true
+      }
+    }
+  ]
+}

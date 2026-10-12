@@ -1,0 +1,24 @@
+# Build output
+build/
+Debug/
+Release/
+*.o
+*.d
+*.lst
+*.elf
+*.hex
+*.bin
+*.map
+
+# Not code: videos, documents, bench data, notes
+*.mp4
+*.pdf
+*.xlsx
+slider_position_study*.xml
+*.ipynb
+.ipynb_checkpoints/
+BUILD_MAIN_C.md
+FIRMWARE_REPORT.md
+HANDOFF_PROMPT.md
+LEARN_MAIN_C.md
+SYNC_CHANGELOG.md
