@@ -78,10 +78,23 @@ extern const float r_motor;                  // spool radius [mm]
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define ValveOut_Pin GPIO_PIN_0
-#define ValveOut_GPIO_Port GPIOA
-#define ValveIn_Pin GPIO_PIN_2
-#define ValveIn_GPIO_Port GPIOA
+/* End-tip pumps: TIM2 PWM (PA0 = CH1, PA2 = CH3) */
+#define PumpTipOut_Pin GPIO_PIN_0
+#define PumpTipOut_GPIO_Port GPIOA
+#define PumpTipIn_Pin GPIO_PIN_2
+#define PumpTipIn_GPIO_Port GPIOA
+
+/* Valves, on/off GPIO */
+#define ValveBaseIn_Pin GPIO_PIN_7
+#define ValveBaseIn_GPIO_Port GPIOD
+#define ValveBaseOut_Pin GPIO_PIN_10
+#define ValveBaseOut_GPIO_Port GPIOB
+#define ValveTipIn_Pin GPIO_PIN_11
+#define ValveTipIn_GPIO_Port GPIOB
+#define ValveTipOut_Pin GPIO_PIN_10
+#define ValveTipOut_GPIO_Port GPIOD
+
+/* Base pumps: TIM1 PWM (PE9 = CH1, PE13 = CH3) */
 #define PumpOut_Pin GPIO_PIN_9
 #define PumpOut_GPIO_Port GPIOE
 #define PumpIn_Pin GPIO_PIN_13

@@ -54,7 +54,8 @@
 FDCAN_HandleTypeDef hfdcan1;
 FDCAN_HandleTypeDef hfdcan2;   /* SDM8070JA1 servo bus: 1 Mbps, standard IDs */
 
-TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim1;   // base pumps     (PE9 CH1 out, PE13 CH3 in)
+TIM_HandleTypeDef htim2;   // end-tip pumps  (PA0 CH1 out, PA2 CH3 in)
 
 UART_HandleTypeDef huart2;  // Flow sensor     (USART2: PD5/PD6, DE=PD4)
 UART_HandleTypeDef huart3;  // Pressure sensor (USART3: PD8/PD9, DE=PB14)
@@ -64,7 +65,7 @@ DMA_HandleTypeDef hdma_usart3_rx;
 
 /* Bump on every change and check it in Ozone - a stale flash is the
    commonest false test result. */
-volatile uint32_t g_build_tag = 0x260712AA;
+volatile uint32_t g_build_tag = 0x261019AA;
 
 volatile uint8_t program_state = 0;
 volatile uint8_t last_program_state = 0;
@@ -83,6 +84,8 @@ volatile uint8_t last_pump_state  = 0;
 volatile float   volume_pumped_mL = 0.0f;
 Pump_t pump_In;
 Pump_t pump_Out;
+Pump_t pump_TipIn;
+Pump_t pump_TipOut;
 
 /* Mechanical */
 const float r_motor = 12.5f;   // spool radius [mm]
@@ -96,6 +99,7 @@ static void MX_DMA_Init(void);
 static void MX_FDCAN1_Init(void);
 static void MX_FDCAN2_Init(void);
 static void MX_TIM1_Init(void);
+static void MX_TIM2_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_USART3_UART_Init(void);
 /* USER CODE BEGIN PFP */
@@ -164,6 +168,7 @@ int main(void)
   MX_FDCAN1_Init();
   MX_FDCAN2_Init();       // SDM8070JA1 servo bus (1 Mbps, standard ids)
   MX_TIM1_Init();
+  MX_TIM2_Init();
   MX_USART2_UART_Init();  // Flow sensor
   MX_USART3_UART_Init();  // Pressure sensor
 
@@ -181,8 +186,22 @@ int main(void)
   pump_Out.MaxCompareValue = __HAL_TIM_GET_AUTORELOAD(&htim1);
   Pump_Init(&pump_Out);
 
+  // ---- End-tip Pump In ----
+  pump_TipIn.htim = &htim2;
+  pump_TipIn.Channel = TIM_CHANNEL_3;
+  pump_TipIn.MaxCompareValue = __HAL_TIM_GET_AUTORELOAD(&htim2);
+  Pump_Init(&pump_TipIn);
+
+  // ---- End-tip Pump Out ----
+  pump_TipOut.htim = &htim2;
+  pump_TipOut.Channel = TIM_CHANNEL_1;
+  pump_TipOut.MaxCompareValue = __HAL_TIM_GET_AUTORELOAD(&htim2);
+  Pump_Init(&pump_TipOut);
+
   Pump_Stop(&pump_In);
   Pump_Stop(&pump_Out);
+  Pump_Stop(&pump_TipIn);
+  Pump_Stop(&pump_TipOut);
 
   // FDCAN filter configuration
   // UIM242 replies use 29-bit extended ids, so accept the full extended range.
@@ -528,6 +547,55 @@ static void MX_TIM1_Init(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function - end-tip pumps, same ~960 Hz PWM as TIM1
+  */
+static void MX_TIM2_Init(void)
+{
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 199;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 999;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_LOW;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  HAL_TIM_MspPostInit(&htim2);
+}
+
+/**
   * @brief USART2 Initialization Function — flow sensor (PD5 TX, PD6 RX, PD4 DE)
   */
 static void MX_USART2_UART_Init(void)
@@ -620,16 +688,24 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /* Set outputs low before configuring */
-  HAL_GPIO_WritePin(GPIOA, ValveOut_Pin | ValveIn_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOD, ValveBaseIn_Pin | ValveTipOut_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, ValveBaseOut_Pin | ValveTipIn_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(RS485_DE_RE_3_GPIO_Port, RS485_DE_RE_3_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(RS485_DE_RE_2_GPIO_Port, RS485_DE_RE_2_Pin, GPIO_PIN_RESET);
 
-  /* ValveOut (PA0), ValveIn (PA2) */
-  GPIO_InitStruct.Pin = ValveOut_Pin | ValveIn_Pin;
+  /* ValveBaseIn (PD7), ValveTipOut (PD10) */
+  GPIO_InitStruct.Pin = ValveBaseIn_Pin | ValveTipOut_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /* ValveBaseOut (PB10), ValveTipIn (PB11) */
+  GPIO_InitStruct.Pin = ValveBaseOut_Pin | ValveTipIn_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* RS485 DE/RE for USART3 (pressure sensor) — PB14 */
   GPIO_InitStruct.Pin = RS485_DE_RE_3_Pin;

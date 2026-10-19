@@ -6,6 +6,8 @@
 
 extern Pump_t pump_In;
 extern Pump_t pump_Out;
+extern Pump_t pump_TipIn;
+extern Pump_t pump_TipOut;
 extern volatile float pressure_value;
 
 // Last commanded pump duties (0..1000) — tendon_sync feed-forward.
@@ -29,10 +31,10 @@ void PumpIn(uint16_t speed)
 {
   pump_in_duty_cmd  = (speed > 1000) ? 1000 : speed;
   pump_out_duty_cmd = 0;
-  HAL_GPIO_WritePin(ValveOut_GPIO_Port, ValveOut_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(ValveBaseOut_GPIO_Port, ValveBaseOut_Pin, GPIO_PIN_RESET);
   // Disable PE9
   Pump_Stop(&pump_Out);
-  HAL_GPIO_WritePin(ValveIn_GPIO_Port, ValveIn_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(ValveBaseIn_GPIO_Port, ValveBaseIn_Pin, GPIO_PIN_SET);
   HAL_Delay(5); // Ensure valve has time to switch before starting the pump
   // Enable PE13
   Pump_SetSpeed(&pump_In, speed);
@@ -42,10 +44,10 @@ void PumpOut(uint16_t speed)
 {
   pump_in_duty_cmd  = 0;
   pump_out_duty_cmd = (speed > 1000) ? 1000 : speed;
-  HAL_GPIO_WritePin(ValveIn_GPIO_Port, ValveIn_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(ValveBaseIn_GPIO_Port, ValveBaseIn_Pin, GPIO_PIN_RESET);
   // Disable PE13
   Pump_Stop(&pump_In);
-  HAL_GPIO_WritePin(ValveOut_GPIO_Port, ValveOut_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(ValveBaseOut_GPIO_Port, ValveBaseOut_Pin, GPIO_PIN_SET);
   HAL_Delay(5); // Ensure valve has time to switch before starting the pump
   // Enable PE9
   Pump_SetSpeed(&pump_Out, speed);
@@ -58,8 +60,8 @@ void PumpStopAll(void)
     Pump_Stop(&pump_In);
     Pump_Stop(&pump_Out);
     HAL_Delay(5); // Ensure pumps have time to stop before switching valves
-    HAL_GPIO_WritePin(ValveIn_GPIO_Port, ValveIn_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(ValveOut_GPIO_Port, ValveOut_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(ValveBaseIn_GPIO_Port, ValveBaseIn_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(ValveBaseOut_GPIO_Port, ValveBaseOut_Pin, GPIO_PIN_RESET);
     HAL_Delay(5); // Ensure pumps have time to stop before switching valves
 }
 
@@ -70,6 +72,34 @@ void PumpDisAll(void)
     HAL_Delay(5); // Ensure pumps have time to stop before switching valves
     Pump_Stop(&pump_In);
     Pump_Stop(&pump_Out);
+}
+
+// ---- End-tip pumps (TIM2: PA2 in, PA0 out; valves PB11 in, PD10 out) ----
+void TipPumpIn(uint16_t speed)
+{
+  HAL_GPIO_WritePin(ValveTipOut_GPIO_Port, ValveTipOut_Pin, GPIO_PIN_RESET);
+  Pump_Stop(&pump_TipOut);
+  HAL_GPIO_WritePin(ValveTipIn_GPIO_Port, ValveTipIn_Pin, GPIO_PIN_SET);
+  HAL_Delay(5); // Ensure valve has time to switch before starting the pump
+  Pump_SetSpeed(&pump_TipIn, speed);
+}
+
+void TipPumpOut(uint16_t speed)
+{
+  HAL_GPIO_WritePin(ValveTipIn_GPIO_Port, ValveTipIn_Pin, GPIO_PIN_RESET);
+  Pump_Stop(&pump_TipIn);
+  HAL_GPIO_WritePin(ValveTipOut_GPIO_Port, ValveTipOut_Pin, GPIO_PIN_SET);
+  HAL_Delay(5); // Ensure valve has time to switch before starting the pump
+  Pump_SetSpeed(&pump_TipOut, speed);
+}
+
+void TipPumpStopAll(void)
+{
+    Pump_Stop(&pump_TipIn);
+    Pump_Stop(&pump_TipOut);
+    HAL_Delay(5); // Ensure pumps have time to stop before switching valves
+    HAL_GPIO_WritePin(ValveTipIn_GPIO_Port, ValveTipIn_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(ValveTipOut_GPIO_Port, ValveTipOut_Pin, GPIO_PIN_RESET);
 }
 
 void Sensor_PressureControl(void)

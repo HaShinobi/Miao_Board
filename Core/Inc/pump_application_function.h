@@ -14,6 +14,9 @@ extern volatile uint16_t pump_out_duty_cmd;
 void PumpIn(uint16_t speed);
 void PumpOut(uint16_t speed);
 void PumpStopAll(void);
+void TipPumpIn(uint16_t speed);   // end-tip pump, PA2 + valve PB11
+void TipPumpOut(uint16_t speed);  // end-tip pump, PA0 + valve PD10
+void TipPumpStopAll(void);
 void Sensor_PressureControl(void);
 void Sensor_PID_Reset(void);
 
