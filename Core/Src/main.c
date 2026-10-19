@@ -24,6 +24,7 @@
 #include <string.h>
 #include "pump_control.h"
 #include "pump_application_function.h"
+#include "pressure_id.h"
 #include "Pressure_sensor.h"
 #include "position_control.h"
 #include "flow_sensor.h"
@@ -65,7 +66,7 @@ DMA_HandleTypeDef hdma_usart3_rx;
 
 /* Bump on every change and check it in Ozone - a stale flash is the
    commonest false test result. */
-volatile uint32_t g_build_tag = 0x261019AB;
+volatile uint32_t g_build_tag = 0x261019AC;
 
 volatile uint8_t program_state = 0;
 volatile uint8_t last_program_state = 0;
@@ -282,6 +283,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
+    PressureID_Task();    // pressure sensor ID tool (psid_cmd from Ozone), idle otherwise
     Sensor_ReadOnce();    // Base pressure (RS485-U3 addr 1), every loop (~200 ms period)
     Sensor_ReadTip();     // End-tip pressure (RS485-U3 addr 2)
 

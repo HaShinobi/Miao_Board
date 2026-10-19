@@ -42,6 +42,7 @@ Core/Src/stm32h7xx_hal_msp.c \
 Core/Src/pump_control.c \
 Core/Src/pump_application_function.c \
 Core\Src\pressure_sensor.c \
+Core/Src/pressure_id.c \
 Core/Src/position_control.c \
 Core/Src/flow_sensor.c \
 Core/Src/sdm8070.c \

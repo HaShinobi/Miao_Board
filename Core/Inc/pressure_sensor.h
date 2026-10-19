@@ -22,5 +22,7 @@ extern volatile uint8_t pressure_tip_enable; // 0 = skip the tip poll
 void Sensor_Init(void);
 void Sensor_ReadOnce(void);   // base sensor -> pressure_value
 void Sensor_ReadTip(void);    // end-tip sensor -> pressure_tip_value
+uint8_t Sensor_Modbus(const uint8_t req[6], uint8_t *rx, uint8_t rx_len,
+                      uint32_t timeout_ms);   // raw transaction, CRC added/checked
 
 #endif

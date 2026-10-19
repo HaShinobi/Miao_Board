@@ -27,15 +27,19 @@ typedef struct {
 static PressureFilter_t filt_base = {0.0f, 1};
 static PressureFilter_t filt_tip  = {0.0f, 1};
 
-/* One Modbus 0x03 read of register 0x0000 (pressure) from `addr`, blocking,
-   ~25 ms with a reply, 100 ms on timeout. Returns 1 and the raw value if the
-   reply has the right address, function, length and CRC. */
-static uint8_t Sensor_ReadRaw(uint8_t addr, uint16_t *raw_out)
+/* One Modbus RTU transaction on RS485-U3, blocking. `req` is the 6-byte
+   request without CRC (address, function, 2-byte register, 2-byte value);
+   the CRC is appended here. Waits for `rx_len` reply bytes (0 = no reply
+   expected, e.g. a broadcast) and returns 1 only if they arrive within
+   `timeout_ms`, come from req[0] with the same function code and pass the
+   CRC. Shared by the pressure poll and the ID tool (pressure_id.c). */
+uint8_t Sensor_Modbus(const uint8_t req[6], uint8_t *rx, uint8_t rx_len,
+                      uint32_t timeout_ms)
 {
-    uint8_t tx_cmd[8] = {addr, 0x03, 0x00, 0x00, 0x00, 0x01, 0, 0};
-    uint8_t rx_buf[10] = {0};
+    uint8_t tx_cmd[8];
     HAL_StatusTypeDef status;
 
+    for (int i = 0; i < 6; i++) tx_cmd[i] = req[i];
     uint16_t crc = Modbus_CRC16(tx_cmd, 6);
     tx_cmd[6] = crc & 0xFF;
     tx_cmd[7] = crc >> 8;
@@ -57,21 +61,37 @@ static uint8_t Sensor_ReadRaw(uint8_t addr, uint16_t *raw_out)
     HAL_GPIO_WritePin(RS485_DE_RE_3_GPIO_Port, RS485_DE_RE_3_Pin, GPIO_PIN_RESET);
     HAL_Delay(1);
 
-    status = HAL_UART_Receive(&huart3, rx_buf, 7, 100);
+    if (rx_len == 0) return 1;
+
+    status = HAL_UART_Receive(&huart3, rx, rx_len, timeout_ms);
 
     debug_rx_status = (uint8_t)status;       // last transaction, either sensor
-    debug_len = 7;
-    for (int i = 0; i < 7; i++) {
-        debug_raw[i] = rx_buf[i];
+    debug_len = rx_len;
+    for (int i = 0; i < rx_len && i < 10; i++) {
+        debug_raw[i] = rx[i];
     }
 
     if (status != HAL_OK ||
-        rx_buf[0] != addr ||      // 地址正确
-        rx_buf[1] != 0x03 ||      // 功能码正确
-        rx_buf[2] != 0x02)        // 数据长度正确
+        rx[0] != req[0] ||        // 地址正确
+        rx[1] != req[1])          // 功能码正确 (0x83/0x86 = sensor error reply)
         return 0;
 
-    if (Modbus_CRC16(rx_buf, 5) != (uint16_t)(rx_buf[5] | (rx_buf[6] << 8)))
+    if (Modbus_CRC16(rx, rx_len - 2) !=
+        (uint16_t)(rx[rx_len - 2] | (rx[rx_len - 1] << 8)))
+        return 0;
+
+    return 1;
+}
+
+/* One 0x03 read of register 0x0000 (pressure) from `addr`, ~25 ms with a
+   reply, 100 ms on timeout. */
+static uint8_t Sensor_ReadRaw(uint8_t addr, uint16_t *raw_out)
+{
+    const uint8_t req[6] = {addr, 0x03, 0x00, 0x00, 0x00, 0x01};
+    uint8_t rx_buf[7] = {0};
+
+    if (!Sensor_Modbus(req, rx_buf, 7, 100) ||
+        rx_buf[2] != 0x02)        // 数据长度正确
         return 0;
 
     *raw_out = (rx_buf[3] << 8) | rx_buf[4];
