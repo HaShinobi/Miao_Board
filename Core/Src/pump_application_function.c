@@ -75,31 +75,50 @@ void PumpDisAll(void)
 }
 
 // ---- End-tip pumps (TIM2: PA2 in, PA0 out; valves PB11 in, PD10 out) ----
+// Called every pass by the arm states, so the valve switch (and its 5 ms
+// settle) only happens when the direction actually changes.
+volatile uint16_t tip_in_duty_cmd  = 0;   // last commanded duties (0..1000)
+volatile uint16_t tip_out_duty_cmd = 0;
+static uint8_t tip_mode = 0;              // 0 stopped, 1 pumping in, 2 pumping out
+
 void TipPumpIn(uint16_t speed)
 {
-  HAL_GPIO_WritePin(ValveTipOut_GPIO_Port, ValveTipOut_Pin, GPIO_PIN_RESET);
-  Pump_Stop(&pump_TipOut);
-  HAL_GPIO_WritePin(ValveTipIn_GPIO_Port, ValveTipIn_Pin, GPIO_PIN_SET);
-  HAL_Delay(5); // Ensure valve has time to switch before starting the pump
+  tip_in_duty_cmd  = (speed > 1000) ? 1000 : speed;
+  tip_out_duty_cmd = 0;
+  if (tip_mode != 1) {
+    HAL_GPIO_WritePin(ValveTipOut_GPIO_Port, ValveTipOut_Pin, GPIO_PIN_RESET);
+    Pump_Stop(&pump_TipOut);
+    HAL_GPIO_WritePin(ValveTipIn_GPIO_Port, ValveTipIn_Pin, GPIO_PIN_SET);
+    HAL_Delay(5); // Ensure valve has time to switch before starting the pump
+    tip_mode = 1;
+  }
   Pump_SetSpeed(&pump_TipIn, speed);
 }
 
 void TipPumpOut(uint16_t speed)
 {
-  HAL_GPIO_WritePin(ValveTipIn_GPIO_Port, ValveTipIn_Pin, GPIO_PIN_RESET);
-  Pump_Stop(&pump_TipIn);
-  HAL_GPIO_WritePin(ValveTipOut_GPIO_Port, ValveTipOut_Pin, GPIO_PIN_SET);
-  HAL_Delay(5); // Ensure valve has time to switch before starting the pump
+  tip_in_duty_cmd  = 0;
+  tip_out_duty_cmd = (speed > 1000) ? 1000 : speed;
+  if (tip_mode != 2) {
+    HAL_GPIO_WritePin(ValveTipIn_GPIO_Port, ValveTipIn_Pin, GPIO_PIN_RESET);
+    Pump_Stop(&pump_TipIn);
+    HAL_GPIO_WritePin(ValveTipOut_GPIO_Port, ValveTipOut_Pin, GPIO_PIN_SET);
+    HAL_Delay(5); // Ensure valve has time to switch before starting the pump
+    tip_mode = 2;
+  }
   Pump_SetSpeed(&pump_TipOut, speed);
 }
 
 void TipPumpStopAll(void)
 {
+    tip_in_duty_cmd  = 0;
+    tip_out_duty_cmd = 0;
     Pump_Stop(&pump_TipIn);
     Pump_Stop(&pump_TipOut);
-    HAL_Delay(5); // Ensure pumps have time to stop before switching valves
+    if (tip_mode != 0) HAL_Delay(5); // Ensure pumps have time to stop before switching valves
     HAL_GPIO_WritePin(ValveTipIn_GPIO_Port, ValveTipIn_Pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(ValveTipOut_GPIO_Port, ValveTipOut_Pin, GPIO_PIN_RESET);
+    tip_mode = 0;
 }
 
 void Sensor_PressureControl(void)

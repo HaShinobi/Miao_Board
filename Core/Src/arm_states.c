@@ -11,6 +11,7 @@
 #include "pressure_sensor.h"
 #include "position_control.h"
 #include "sdm8070.h"
+#include "pressure_id.h"
 
 /* hfdcan1, program_state, pump_state, volume_pumped_mL, r_motor: see main.h */
 
@@ -41,23 +42,19 @@ volatile float   arm7_sync_deg   = 1.0f;
    Negative pulls it back the other way. */
 volatile float   home_ready_extra_deg = 4.0f;
 
-/* state 14: section-forming slider init under pressure control. Each cycle
-   holds the chamber at sf_target_kpa, drains sf_q_ml, then reels nodes 5/6
-   in by Q / PC_A_EFF, until sf_total_mm has been pulled back. */
-volatile float    sf_target_kpa   = 30.0f;   // chamber pressure held throughout [kPa]
-volatile float    sf_band_kpa     = 2.0f;    // +/- band counted as "at target"
-volatile uint8_t  sf_settle_n     = 3;       // in-band passes before each drain
-volatile float    sf_min_kpa      = 20.0f;   // end a drain early below this
-volatile float    sf_q_ml         = 10.0f;   // Q: water drained per cycle [mL]
-volatile float    sf_total_mm     = 30.0f;   // total pull-back; 30 mm = the first test
-volatile uint16_t sf_fill_duty    = 150;     // PumpIn duty when below the band
-volatile uint16_t sf_drain_duty   = 300;     // PumpOut duty, regulating and draining
-volatile uint32_t sf_drain_max_ms = 10000;   // give up on a drain that never sees Q
-volatile uint8_t  sf_phase        = 0;       // readback: 0 regulate, 1 drain, 2 reel, 3/4 done
-volatile uint8_t  sf_status       = 0;       // readback: 0 running, 1 done, 2 reel jammed, 3 no drain flow
-volatile uint16_t sf_cycle        = 0;       // readback: cycles completed
-volatile float    sf_done_mm      = 0.0f;    // readback: pulled back so far [mm]
-volatile float    sf_drained_ml   = 0.0f;    // readback: drained this cycle [mL]
+/* End-tip keep-flat (arm_states 3, 4, 5, 6, 7, 9, 10): while the end-tip
+   pressure is below tip_flat_kpa, run the end-tip pump OUT at tip_flat_duty
+   so that chamber stays flat; at or above it, the tip pump is off. Only
+   acts on a live tip reading - see TipKeepFlat_Step(). */
+volatile uint8_t  tip_flat_enable = 1;
+volatile float    tip_flat_kpa    = 5.0f;    // pump out while below this [kPa]
+volatile uint16_t tip_flat_duty   = 50;      // end-tip PumpOut duty (of 1000)
+
+/* state 13: base section pump OUT and end-tip pump IN together. The tip
+   pump stops at xfer_tip_max_kpa so the end tip cannot be over-inflated. */
+volatile uint16_t xfer_base_out_duty = 400;  // base PumpOut duty (= state 8 drain)
+volatile uint16_t xfer_tip_in_duty   = 400;  // end-tip PumpIn duty
+volatile float    xfer_tip_max_kpa   = 60.0f;// end-tip pump in stops at this [kPa]
 
 volatile float   x_target_mm    = 0.0f;
 volatile float   x_cmd_scale    = 0.002492f;
@@ -124,6 +121,20 @@ static void PressureDrop_Step(void)
   else                                    PumpStopAll();
 }
 
+/* End-tip keep-flat, one pass: tip pressure below tip_flat_kpa -> end-tip
+   pump out at tip_flat_duty, otherwise off. Uses the reading main.c took at
+   the top of this pass. With no live tip reading (sensor unplugged or
+   pressure_tip_enable = 0) it does nothing but stop the tip pump - it never
+   pumps blind. Blocking states (5, 6, 10) set it before they block and it
+   stays at that setting until the next pass. */
+static void TipKeepFlat_Step(void)
+{
+  if (tip_flat_enable && Sensor_TipFresh() && pressure_tip_value < tip_flat_kpa)
+    TipPumpOut(tip_flat_duty);
+  else
+    TipPumpStopAll();
+}
+
 /* ==================================================================== */
 /*  ARM STATES                                                          */
 /* ==================================================================== */
@@ -136,27 +147,28 @@ void ArmState_SDMHome(void)
 {
 }
 
-/* 2 - Tendon init. Tension-homes BOTH tendon pairs - nodes 3/4 and 5/6 -
-       so every tendon is in a known physical state before reaching
-       begins. Blocks while it seeks. */
+/* 2 - Tendon init. Tension-homes the slider tendons (nodes 3/4) so they
+       are in a known physical state before reaching begins. Blocks while
+       it seeks. */
 void ArmState_Home(void)
 {
   if (!pullback_started) {
-    String_InitBothPairs();
+    String_InitTendons();
     pullback_started = 1;
   }
 }
 
-/* 2 - Fill: pump water in, track slider position from the flow integral,
-       and pay string out so a slack margin always leads the slider. */
+/* 3 - Fill: pump water in, track slider position from the flow integral,
+       and pay string out so a slack margin always leads the slider. The
+       end-tip section is kept flat throughout. */
 void ArmState_Fill(void)
 {
+  TipKeepFlat_Step();
+
   if (!pullback_started) {
     PositionControl_Init();
     string_paid_mm         = 0.0f;   /* string reference zero = start of fill */
-    string2_paid_mm        = 0.0f;
     string_init_done       = 0;      /* re-configure + enable the spool nodes */
-    string2_init_done      = 0;
     string_prewind_pending = 1;      /* owe the initial one-revolution unwind  */
     pullback_started       = 1;
     coast_loops            = 0;
@@ -176,34 +188,30 @@ void ArmState_Fill(void)
   if (!string_enable) return;
   string_pos_mm = pos_true * 1000.0f;                 /* m -> mm */
 
-  /* Both spool pairs pay out the same length: nodes 3/4 and nodes 5/6.
-     Pair 1 only ever pays out - the reel-in in states 5 and 10 is pair 0. */
+  /* Slider tendons (nodes 3/4) pay out in step with the slider. */
   if (string_prewind_pending) {
     /* free slack dump: one full spool revolution (78.54 mm at r = 12.5) */
     string_prewind_mm = string_prewind_rev * 6.2831853f * r_motor;
     if (string_prewind_mm > 0.05f) {
-      String_Move (string_prewind_mm);
-      String2_Move(string_prewind_mm);
-      string_paid_mm  += string_prewind_mm;
-      string2_paid_mm += string_prewind_mm;
+      String_Move(string_prewind_mm);
+      string_paid_mm += string_prewind_mm;
     }
     string_prewind_pending = 0;
   } else {
     /* hold string_excess_mm of slack ahead of the slider */
     float delta_mm = (string_pos_mm + string_excess_mm) - string_paid_mm;
     if (delta_mm >= string_step_mm) {
-      String_Move (delta_mm);
-      String2_Move(delta_mm);
-      string_paid_mm  += delta_mm;
-      string2_paid_mm += delta_mm;
+      String_Move(delta_mm);
+      string_paid_mm += delta_mm;
     }
   }
 }
 
-/* 3 - Grasp on the PUSIROBOT spools. grasping_degree >= 0 closes (the
+/* 4 - Grasp on the PUSIROBOT spools. grasping_degree >= 0 closes (the
        stall IS the grip), < 0 opens by that angle. Hands off to hold. */
 void ArmState_Grasp(void)
 {
+  TipKeepFlat_Step();
   Sensor_PressureControl();
   if (!pullback_started) {
     /* Non-zero = finite move to that angle (+ closes, - opens).
@@ -236,6 +244,7 @@ void ArmState_ReleaseAssembly(void)
        margin; set it to 0 if none is wanted. */
 void ArmState_SeparateSliders(void)
 {
+  TipKeepFlat_Step();
   Sensor_PressureControl();
   if (pullback_started == 1) return;
 
@@ -264,6 +273,7 @@ void ArmState_SeparateSliders(void)
        working pressure. */
 void ArmState_JointRotate(void)
 {
+  TipKeepFlat_Step();
   if (pullback_started != 2) {
     if (joint_home_apply) {
       Sensor_PressureControl();
@@ -282,8 +292,8 @@ void ArmState_JointRotate(void)
 /* 7 - Big servo to an absolute angle. Auto-moves whenever you change
        arm7_target_deg in Ozone; no apply flag.
 
-       The slider tendons (nodes 3/4 AND 5/6) are compensated IN STEP with
-       the rotation: every time the measured base angle has moved
+       The slider tendons (nodes 3/4) are compensated IN STEP with the
+       rotation: every time the measured base angle has moved
        arm7_sync_deg past the last compensated angle, each tendon is paid
        out or reeled in by what the base geometry says it needs at that
        angle. Pressure is held LOW while the base moves (PressureDrop_Step)
@@ -299,6 +309,7 @@ void ArmState_ServoAngle(void)
   static float   last_pos = 0.0f;
   static uint8_t still    = 0;
 
+  TipKeepFlat_Step();
   SDM_MoveOnChange(arm7_target_deg, arm7_speed_rpm, arm7_tol_deg);
 
   float here  = sdm_pos_user_deg;
@@ -332,20 +343,32 @@ void ArmState_Drain(void)
   pullback_started = 0;
 }
 
-/* 9 - Hold position and maintain pressure. States 3/4/6 fall through here. */
+/* 9 - Hold position and maintain pressure. States 4/6 fall through here. */
 void ArmState_Hold(void)
 {
+  TipKeepFlat_Step();
   Sensor_PressureControl();
   pullback_started = 0;
 }
 
 /* 10 - Joint forming init: configure nodes 3/4, pull them taut, then reset
-        every piece of position bookkeeping so the next round starts here. */
+        every piece of position bookkeeping - tendon payout, the PI
+        controller state, and the volume/position integrals - so the next
+        round starts exactly like a fresh trial. */
 void ArmState_InitSlider(void)
 {
+  TipKeepFlat_Step();
   Sensor_PressureControl();
   if (!pullback_started) {
-    Inite_joint_forming();
+    Inite_joint_forming();   // nodes 3/4 taut; zeroes string_paid_mm + joint pose
+
+    PositionControl_Init();  // pos_estimate + PI integral/direction -> 0
+    volume_pumped_mL = 0.0f;
+    net_volume_mL    = 0.0f;
+    pos_phys         = 0.0f;
+    pos_true         = 0.0f;
+    pos_true_raw     = 0.0f;
+
     pullback_started = 1;
   }
 }
@@ -370,6 +393,7 @@ void ArmState_Idle(void)
     coast_loops = COAST_WINDOW;
   }
   PumpStopAll();
+  TipPumpStopAll();
   if (coast_loops > 0) {
     volume_pumped_mL += PositionControl_TrackFlowOnly();   /* real coast-down flow */
     pos_true = PositionControl_TruePosFromVolume(volume_pumped_mL);
@@ -379,134 +403,19 @@ void ArmState_Idle(void)
   }
 }
 
-/* 13 - End-of-round small-slider init. Tension-homes nodes 5/6 ("small
-        slider") ONLY, then zeroes every piece of position/volume
-        bookkeeping - tendon payout, the PI controller state, and the
-        volume/position integrals - so the next round starts exactly like a
-        fresh trial, not carrying over anything from the one just finished.
-        Meant to run AFTER the joint-forming slider (nodes 3/4) has already
-        been tension-homed - e.g. by arm_state 10 - since the small slider
-        pulls back until it physically locks against the already-taut
-        joint-forming slider. Servo homing is its own state now (1), so it
-        is not repeated here - sequence 1 -> 10 -> 13 for a full re-init.
-        Same one-shot + pressure-hold shape as arm_state 10. */
-void ArmState_InitSmallSlider(void)
+/* 13 - Base section pump OUT and end-tip pump IN, together. Runs until the
+        state is changed. The end-tip pump stops once the tip reaches
+        xfer_tip_max_kpa, and does not run at all without a live tip
+        reading, so the tip cannot be over-inflated blind. */
+void ArmState_BaseOutTipIn(void)
 {
-  Sensor_PressureControl();
-  if (!pullback_started) {
-    init_small_slider();     // nodes 5/6: tension-home to lock against it
+  PumpOut(xfer_base_out_duty);
+  PositionControl_TrackFlowOnly();
 
-    /* Fresh-trial reset: every position/volume integral back to zero.
-       string2_paid_mm is already zeroed inside init_small_slider(). */
-    string_paid_mm   = 0.0f;
-    PositionControl_Init();  // pos_estimate + PI integral/direction -> 0
-    volume_pumped_mL = 0.0f;
-    net_volume_mL    = 0.0f;
-    pos_phys         = 0.0f;
-    pos_true         = 0.0f;
-    pos_true_raw     = 0.0f;
-
-    pullback_started = 1;
-  }
-}
-
-/* Drive the chamber toward sf_target_kpa from either side. 1 = in band.
-   PumpStopAll (not PumpDisAll) so the valves close and the pressure holds. */
-static uint8_t SF_RegulatePressure(void)
-{
-  if (pressure_value < sf_target_kpa - sf_band_kpa) { PumpIn(sf_fill_duty);   return 0; }
-  if (pressure_value > sf_target_kpa + sf_band_kpa) { PumpOut(sf_drain_duty); return 0; }
-  PumpStopAll();
-  return 1;
-}
-
-/* 14 - Section-forming slider init under pressure control. Run with the
-        joint-forming slider already docked (state 10 first).
-
-        The chamber has to stay stiff the whole way, so instead of hauling
-        the slider back against the water, each cycle makes room first:
-          1. regulate to sf_target_kpa (pumps in or out) and let it settle;
-          2. drain Q = sf_q_ml, measured by the flow sensor;
-          3. reel nodes 5/6 in by Q / PC_A_EFF - the slider moving back
-             takes up exactly the volume that was removed;
-        repeated until sf_total_mm is pulled back. The last cycle drains
-        only what the remaining distance needs. If pressure drops below
-        sf_min_kpa mid-drain, the drain ends early and the reel uses the
-        volume actually removed.
-
-        sf_status: 1 done, 2 a reel did not finish (jammed or already
-        locked), 3 a drain never saw flow. After it ends the chamber is
-        kept at sf_target_kpa. Not stall-based: nodes 5/6 ignore stall
-        while reeling here, so it stops on distance only - run state 13
-        afterwards to pull the last bit taut and lock. */
-void ArmState_SectionInit(void)
-{
-  static uint8_t  in_band = 0;
-  static float    v_start = 0.0f;
-  static float    q_cycle = 0.0f;
-  static uint32_t t_drain = 0;
-
-  (void)PositionControl_TrackFlowOnly();       /* keeps net_volume_mL current */
-
-  if (!pullback_started) {
-    sf_phase = 0;  sf_status = 0;  sf_cycle = 0;
-    sf_done_mm = 0.0f;  sf_drained_ml = 0.0f;
-    in_band = 0;
-    if (!string2_enable) { sf_status = 2; sf_phase = 3; }
-    else                 String2_ReelMode(1);
-    pullback_started = 1;
-  }
-
-  switch (sf_phase) {
-    case 0:                                    /* regulate, then start a drain */
-      if (SF_RegulatePressure()) { if (in_band < 255u) in_band++; }
-      else                       in_band = 0;
-      if (in_band >= sf_settle_n) {
-        float left_ml = (sf_total_mm - sf_done_mm) * PC_A_EFF * 1.0e3f;  /* mm -> mL */
-        q_cycle       = (left_ml < sf_q_ml) ? left_ml : sf_q_ml;
-        v_start       = net_volume_mL;
-        t_drain       = HAL_GetTick();
-        sf_drained_ml = 0.0f;
-        in_band       = 0;
-        sf_phase      = 1;
-      }
-      break;
-
-    case 1:                                    /* drain Q */
-      sf_drained_ml = v_start - net_volume_mL;
-      if (sf_drained_ml >= q_cycle || pressure_value < sf_min_kpa) {
-        PumpStopAll();
-        if (sf_drained_ml < 0.5f) { sf_status = 3; sf_phase = 3; }
-        else                      sf_phase = 2;
-      } else if ((HAL_GetTick() - t_drain) > sf_drain_max_ms) {
-        PumpStopAll();
-        sf_status = 3;
-        sf_phase  = 3;
-      } else {
-        PumpOut(sf_drain_duty);
-      }
-      break;
-
-    case 2: {                                  /* reel in Q / A */
-      float mm   = sf_drained_ml * 1.0e-3f / PC_A_EFF;                   /* mL -> mm */
-      float left = sf_total_mm - sf_done_mm;
-      if (mm > left) mm = left;
-      if (!String2_ReelIn(mm)) { sf_status = 2; sf_phase = 3; break; }
-      sf_done_mm += mm;
-      sf_cycle++;
-      if (sf_done_mm >= sf_total_mm - 0.05f) { sf_status = 1; sf_phase = 3; }
-      else                                   sf_phase = 0;
-      break;
-    }
-
-    default:                                   /* finished: stay stiff */
-      if (sf_phase == 3) {
-        if (string2_enable) String2_ReelMode(0);
-        sf_phase = 4;
-      }
-      (void)SF_RegulatePressure();
-      break;
-  }
+  if (Sensor_TipFresh() && pressure_tip_value < xfer_tip_max_kpa)
+    TipPumpIn(xfer_tip_in_duty);
+  else
+    TipPumpStopAll();
 }
 
 /* ==================================================================== */
@@ -550,20 +459,19 @@ void Arm_OnProgramStateChange(void)
 
 /* Housekeeping run before the dispatch switch in main.c, every pass.
 
-   On an arm_state CHANGE: start the pump coast window if dropping to idle,
-   then clear pullback_started so the new state fires its one-shot once
-   whichever state we came from. That is what makes 2->5 behave like 2->9->5.
-   Nothing needs an explicit stop - every spool move is a finite position
-   command, and the gripper is stopped through grasp_stop_apply.
+   On an arm_state CHANGE: stop the end-tip pump, start the pump coast
+   window if dropping to idle, then clear pullback_started so the new state
+   fires its one-shot once whichever state we came from. That is what makes
+   2->5 behave like 2->9->5. The states that want the end-tip pump restart
+   it on their first pass. Spools need no explicit stop - every spool move
+   is a finite position command, and the gripper is stopped through
+   grasp_stop_apply.
 
    Every pass: service the Ozone gripper-stop one-shot. */
 void Arm_BeginPass(void)
 {
   if (arm_state != last_arm_state) {
-    /* Nodes 5/6 pay out during state 2 and are used nowhere else, so they
-       are stopped on EVERY state change - they must never be left turning
-       once the fill ends. State 2 re-commands them on its next pass. */
-    String2_Stop();
+    TipPumpStopAll();
 
     if (pullback_started != 0 && arm_state == 0) {
       coast_loops = COAST_WINDOW;      // pump coast-down after leaving state 2
@@ -576,15 +484,25 @@ void Arm_BeginPass(void)
 }
 
 /* Manual bench mode: pump and spools driven straight from Ozone, with no
-   sequencing. Used for filling, draining and polarity checks. */
+   sequencing. Used for filling, draining and polarity checks.
+
+   pump_state 5 = change a pressure sensor's Modbus ID: set psid_old and
+   psid_new first, with ONLY that sensor wired to RS485-U3, then set
+   pump_state = 5. It runs once, drops back to pump_state 0, and leaves the
+   result in psid_status (2 = OK). See pressure_id.h. */
 void Bench_Task(void)
 {
   if (pump_state != last_pump_state) {
-    if      (pump_state == 0) PumpStopAll();
+    if      (pump_state == 0) { PumpStopAll(); TipPumpStopAll(); }
     else if (pump_state == 1) PumpIn(200);
     else if (pump_state == 2) PositionControl_ResetPI();  // reset PI, keep pos_estimate
+    else if (pump_state == 5) psid_cmd = 1;               // change sensor ID
     last_pump_state = pump_state;
   }
+
+  /* Sensor ID tool: pump_state 5 above, or psid_cmd = 2 (scan) from Ozone. */
+  PressureID_Task();
+  if (pump_state == 5 && psid_cmd == 0) pump_state = 0;   /* one-shot: never re-fires */
 
   /* pump_state 2: pump in + accumulate volume -> slider position, open loop */
   if (pump_state == 2) {

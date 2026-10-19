@@ -6,12 +6,14 @@
 // arm_state:
 //   0  idle, everything off      8  drain
 //   1  servo homing              9  hold + pressure
-//   2  tendon init (both pairs) 10  joint forming init + position reset
+//   2  tendon init (nodes 3/4)  10  joint forming init + fresh-trial reset
 //   3  fill + pay out slack     11  (unused - falls through to idle)
 //   4  grasp / release          12  closed-loop move to x_target_mm
-//   5  separate + reel back     13  small slider init + fresh-trial reset
-//   6  joint rotation           14  section-forming slider init (pressure-held)
+//   5  separate + reel back     13  base pump out + end-tip pump in
+//   6  joint rotation
 //   7  big servo to arm7_target_deg, tendons released in step
+//
+// 3, 4, 5, 6, 7, 9 and 10 also keep the end-tip section flat (tip_flat_*).
 
 #ifndef INC_ARM_STATES_H_
 #define INC_ARM_STATES_H_
@@ -44,22 +46,16 @@ extern volatile float   arm7_sync_deg;      // release tendons every this many d
    position, in the direction of travel (away from the hard stop). */
 extern volatile float   home_ready_extra_deg;
 
-/* state 14: section-forming slider init under pressure control - see
-   ArmState_SectionInit() in arm_states.c. Set sf_total_mm before entering. */
-extern volatile float    sf_target_kpa;    // chamber pressure held throughout [kPa]
-extern volatile float    sf_band_kpa;      // +/- band counted as "at target"
-extern volatile uint8_t  sf_settle_n;      // in-band passes before each drain
-extern volatile float    sf_min_kpa;       // end a drain early below this
-extern volatile float    sf_q_ml;          // Q: water drained per cycle [mL]
-extern volatile float    sf_total_mm;      // total pull-back [mm]
-extern volatile uint16_t sf_fill_duty;     // PumpIn duty when below the band
-extern volatile uint16_t sf_drain_duty;    // PumpOut duty
-extern volatile uint32_t sf_drain_max_ms;  // give up on a drain that never sees Q
-extern volatile uint8_t  sf_phase;         // readback: 0 regulate, 1 drain, 2 reel, 3/4 done
-extern volatile uint8_t  sf_status;        // readback: 0 running, 1 done, 2 reel jammed, 3 no drain flow
-extern volatile uint16_t sf_cycle;         // readback: cycles completed
-extern volatile float    sf_done_mm;       // readback: pulled back so far [mm]
-extern volatile float    sf_drained_ml;    // readback: drained this cycle [mL]
+/* End-tip keep-flat, states 3/4/5/6/7/9/10: end-tip pressure below
+   tip_flat_kpa -> end-tip pump out at tip_flat_duty, else off. */
+extern volatile uint8_t  tip_flat_enable;
+extern volatile float    tip_flat_kpa;
+extern volatile uint16_t tip_flat_duty;
+
+/* state 13: base pump out + end-tip pump in, tip capped at xfer_tip_max_kpa. */
+extern volatile uint16_t xfer_base_out_duty;
+extern volatile uint16_t xfer_tip_in_duty;
+extern volatile float    xfer_tip_max_kpa;
 
 /* Pre-move pressure drop, states 6 and 7: bleed to lo..hi kPa and hold for
    pm_predrop_ms before the rotation/servo move fires. 0 = skip (normal
@@ -97,12 +93,12 @@ extern volatile uint8_t last_grasping_state;
 void Arm_StartupHoming(void);        // one-shot servo home, fires at arm_state 1
 void Arm_OnProgramStateChange(void); // re-arm the latches after a mode switch
 void Arm_BeginPass(void);            // housekeeping before the dispatch switch
-void Bench_Task(void);               // program_state 0: manual pump / motors
+void Bench_Task(void);               // program_state 0: manual pump / motors / sensor ID
 
 /* ---- one function per arm_state; main.c dispatches these ---- */
 void ArmState_Idle(void);            //  0  everything off (+ coast window)
 void ArmState_SDMHome(void);         //  1  servo homing
-void ArmState_Home(void);            //  2  tendon homing + position reset
+void ArmState_Home(void);            //  2  tendon homing (nodes 3/4)
 void ArmState_Fill(void);            //  3  fill + pay out slack
 void ArmState_Grasp(void);           //  4  grasp / release
 void ArmState_SeparateSliders(void); //  5  separate + reel back
@@ -110,10 +106,9 @@ void ArmState_JointRotate(void);     //  6  joint rotation
 void ArmState_ServoAngle(void);      //  7  big servo to arm7_target_deg
 void ArmState_Drain(void);           //  8  pump out
 void ArmState_Hold(void);            //  9  hold + pressure
-void ArmState_InitSlider(void);      // 10  joint forming init + position reset
+void ArmState_InitSlider(void);      // 10  joint forming init + fresh-trial reset
 void ArmState_MoveToPosition(void);  // 12  closed-loop move to x_target_mm
-void ArmState_InitSmallSlider(void); // 13  small slider init + fresh-trial reset
-void ArmState_SectionInit(void);     // 14  section-forming slider init (pressure-held)
+void ArmState_BaseOutTipIn(void);    // 13  base pump out + end-tip pump in
 
 #ifdef __cplusplus
 }

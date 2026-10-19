@@ -9,6 +9,8 @@
 // exactly one is nonzero while a pump runs, both 0 when stopped.
 extern volatile uint16_t pump_in_duty_cmd;
 extern volatile uint16_t pump_out_duty_cmd;
+extern volatile uint16_t tip_in_duty_cmd;     // end-tip pumps, same idea
+extern volatile uint16_t tip_out_duty_cmd;
 
 // 函数原型声明 (Function Prototypes)
 void PumpIn(uint16_t speed);

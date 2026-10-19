@@ -4,17 +4,19 @@
 // T3000/T3100 sensor on RS485-U3 (datasheet "通讯协议 V1.3": address lives
 // in register 0x0005, range 1..255, factory default 1).
 //
-// Use from Ozone, with ONLY the sensor being changed wired to RS485-U3 and
-// the arm idle - the scan blocks the main loop for up to ~15 s and both
-// commands stop the pumps first.
+// Runs in bench mode (program_state 0) only, with ONLY the sensor being
+// changed wired to RS485-U3 - the scan blocks the main loop for up to ~15 s
+// and both commands stop the pumps first.
 //
-//   Scan:    psid_cmd = 2                -> psid_found = its address
 //   Change:  psid_old = 1, psid_new = 2,
-//            psid_cmd = 1                -> psid_status = PSID_OK
+//            pump_state = 5              -> psid_status = PSID_OK
+//            (or psid_cmd = 1; pump_state 5 just sets it, once)
 //            (psid_old = 0 if the current address is unknown: sent as a
 //             broadcast, which re-addresses EVERY sensor on the bus)
+//   Scan:    psid_cmd = 2                -> psid_found = its address
 //
-// psid_cmd clears itself when the command has run; read psid_status.
+// psid_cmd clears itself and pump_state drops back to 0 when the command
+// has run; read psid_status.
 
 #ifndef INC_PRESSURE_ID_H_
 #define INC_PRESSURE_ID_H_

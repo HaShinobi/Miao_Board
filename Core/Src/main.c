@@ -24,7 +24,6 @@
 #include <string.h>
 #include "pump_control.h"
 #include "pump_application_function.h"
-#include "pressure_id.h"
 #include "Pressure_sensor.h"
 #include "position_control.h"
 #include "flow_sensor.h"
@@ -66,7 +65,7 @@ DMA_HandleTypeDef hdma_usart3_rx;
 
 /* Bump on every change and check it in Ozone - a stale flash is the
    commonest false test result. */
-volatile uint32_t g_build_tag = 0x261019AC;
+volatile uint32_t g_build_tag = 0x261019AD;
 
 volatile uint8_t program_state = 0;
 volatile uint8_t last_program_state = 0;
@@ -283,7 +282,6 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    PressureID_Task();    // pressure sensor ID tool (psid_cmd from Ozone), idle otherwise
     Sensor_ReadOnce();    // Base pressure (RS485-U3 addr 1), every loop (~200 ms period)
     Sensor_ReadTip();     // End-tip pressure (RS485-U3 addr 2)
 
@@ -291,14 +289,15 @@ int main(void)
 
     if (program_state != last_program_state) {
       PumpStopAll();
-      String_StopAll();                 /* all four spools, nodes 3/4 + 5/6 */
+      TipPumpStopAll();
+      String_StopAll();                 /* slider spools, nodes 3/4         */
       Grasp_StopNow();                  /* nodes 7/8 run continuously       */
       Arm_OnProgramStateChange();
       last_program_state = program_state;
     }
 
     if (program_state == 0) {
-      Bench_Task();                 // manual pump / motor controls
+      Bench_Task();                 // manual pump / motor controls, pump_state 5 = sensor ID
     }
     else if (program_state == 1) {
       /* Arm state machine. Each case is one call; the bodies live in
@@ -320,8 +319,7 @@ int main(void)
         case 9:   ArmState_Hold();             break;   /* hold + pressure      */
         case 10:  ArmState_InitSlider();       break;   /* pull back UNTIL STALLING*/
         case 12:  ArmState_MoveToPosition();   break;   /* closed-loop position */
-        case 13:  ArmState_InitSmallSlider(); break;   /* Init section-forming slider */
-        case 14:  ArmState_SectionInit();     break;   /* section-forming slider init, pressure-held */
+        case 13:  ArmState_BaseOutTipIn();     break;   /* base out + end-tip in */
         case 0:
         default:  ArmState_Idle();             break;   /* everything off       */
       }

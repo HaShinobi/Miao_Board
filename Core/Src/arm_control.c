@@ -79,36 +79,9 @@ volatile float    string_last_deg     = 0.0f;
 volatile int32_t  string_spd_up       = 0;
 volatile int32_t  string_spd_down     = 0;
 
-/* ---- second payout pair: nodes 5 / 6 ----------------------------------
-   Mirrors nodes 3/4 during the fill and does nothing else - no reel-in, no
-   joint rotation, no tensioning home. Shares the slack policy
-   (string_excess_mm, string_step_mm), the spool radius and all the drive
-   settings, so it always pays out exactly the same length.
-   Directions default to the same signs as pair 0; flip in Ozone during a
-   state-2 payout if a spool winds the wrong way.                       */
-volatile uint8_t  string2_enable      = 1;
-volatile uint8_t  string2_node_up     = 5;
-volatile uint8_t  string2_node_down   = 6;
-/* Same length, radius, steps/rev and speed as pair 0 - only the rotation
-   senses differ. Bench-set: node 5 CCW, node 6 CW, which is the OPPOSITE
-   of nodes 3/4 (3 = CW, 4 = CCW). Judge polarity during payout only.  */
-volatile int8_t   string2_dir_up      = PUSI_CCW;   /* +1, node 5 */
-volatile int8_t   string2_dir_down    = PUSI_CW;    /* -1, node 6 */
-/* Only trim if 5/6 measurably travel a different distance for the same
-   command: 1.0 = identical, 0.5 = half as far. Everything else (radius,
-   steps/rev, speed, accel) is shared with pair 0.                      */
-volatile float    string2_scale       = 1.0f;
-volatile float    string2_paid_mm     = 0.0f;
-volatile uint8_t  string2_init_done   = 0;
-volatile uint8_t  string2_err_up      = 0;
-volatile uint8_t  string2_err_down    = 0;
-volatile int32_t  string2_spd_up      = 0;
-volatile int32_t  string2_spd_down    = 0;
-
 /* 0x6005 as read back after the last Pair_Config, for the pair configured
    most recently. 0 = position mode (wanted), 1 = speed mode (the motor will
-   run continuously), 0xFF = the read failed. Nodes 5/6 are configured after
-   3/4 in arm_state 2, so during a fill these show pair 1.               */
+   run continuously), 0xFF = the read failed.                            */
 volatile uint8_t pair_mode_up   = 0xFF;
 volatile uint8_t pair_mode_down = 0xFF;
 
@@ -117,7 +90,7 @@ volatile uint8_t pair_mode_down = 0xFF;
    documented to reflect SPEED-mode motion, so it cannot be trusted to mean
    "stopped" - RT_SPEED is the only signal that actually does. A work-mode
    change attempted while the drive still thinks it is running is silently
-   rejected, which is how nodes 5/6 were found stuck in speed mode. */
+   rejected, which is how a spool pair was once found stuck in speed mode. */
 static uint8_t Pusi_WaitStopped(uint8_t node, uint32_t timeout_ms)
 {
   uint32_t t0 = HAL_GetTick();
@@ -144,7 +117,7 @@ static void Pair_Config(uint8_t nu, uint8_t nd,
   for (int i = 0; i < 2; i++) {
     /* ORDER MATTERS. In SPEED mode the drive reads the 0x6003 write inside
        PUSI_MoveRel as "run at this speed forever" and ignores the step count
-       in 0x6004 - the motor never stops, which is what nodes 5/6 do.
+       in 0x6004 - the motor never stops.
 
        The drive will not accept a work-mode change while it is turning, and
        apparently not while it is ENERGIZED either - the same trap the UIM242
@@ -193,19 +166,10 @@ static void Pair_Stop(uint8_t nu, uint8_t nd)
   }
 }
 
-/* Stop all four spools - nodes 3/4 and 5/6. */
+/* Stop the slider tendon spools - nodes 3/4. */
 void String_StopAll(void)
 {
-  Pair_Stop(string_node_up,  string_node_down);
-  Pair_Stop(string2_node_up, string2_node_down);
-}
-
-/* Stop nodes 5/6 only. Pair 1 pays out during arm_state 2 and is used by
-   nothing else, so every state change stops it - it must never be left
-   turning once the fill ends.                                          */
-void String2_Stop(void)
-{
-  Pair_Stop(string2_node_up, string2_node_down);
+  Pair_Stop(string_node_up, string_node_down);
 }
 
 static void String_ConfigNodes(uint16_t current_ma, uint16_t thresh, uint8_t stop_on_stall)
@@ -270,31 +234,6 @@ void String_Move(float length_mm)
             &string_spd_up, &string_spd_down);
 }
 
-/* Pair 1 (nodes 5/6) - payout only, never called for reel-in. */
-void String2_Init(void)
-{
-  /* Stop first - see String_PmcInit. Nodes 5/6 are the pair that was found
-     spinning in speed mode, so this ordering matters most here. */
-  Pair_Stop(string2_node_up, string2_node_down);
-  PUSI_SetMicrostep(string2_node_up,   spool_microstep);
-  PUSI_SetMicrostep(string2_node_down, spool_microstep);
-  Pair_Config(string2_node_up, string2_node_down,
-              string_current_ma, spool_stall_thresh, string_stall_stop);
-  string2_init_done = 1;
-}
-
-void String2_Move(float length_mm)
-{
-  if (!string2_enable) return;
-  if (!string2_init_done) String2_Init();
-  /* Identical constants to pair 0 - same radius, steps/rev and speed - so
-     nodes 5/6 pay out exactly what nodes 3/4 do. */
-  Pair_Move(string2_node_up, string2_node_down, string2_dir_up, string2_dir_down,
-            length_mm * string2_scale, r_motor, string_steps_per_rev, string_speed_pps,
-            &string2_err_up, &string2_err_down,
-            &string2_spd_up, &string2_spd_down);
-}
-
 /* 1 = idle, 0 = timed out. */
 static uint8_t String_WaitIdle(uint8_t node, uint32_t timeout_ms)
 {
@@ -336,31 +275,6 @@ void String_ReelIn(float total_mm)
   }
 
   String_ConfigNodes(string_current_ma, spool_stall_thresh, string_stall_stop);
-}
-
-/* Pair 1 (nodes 5/6) loaded reel-in, for arm_state 14. on = 1 sets the reel
-   current and ignores stall for the whole sequence; on = 0 restores the
-   normal config. Set once per sequence, not per pull: every Pair_Config
-   briefly de-energises the spools while the chamber is pushing on them. */
-void String2_ReelMode(uint8_t on)
-{
-  if (!string2_init_done) String2_Init();
-  if (on) Pair_Config(string2_node_up, string2_node_down,
-                      string_reel_current_ma, 0x7Fu, 0u);
-  else    Pair_Config(string2_node_up, string2_node_down,
-                      string_current_ma, spool_stall_thresh, string_stall_stop);
-}
-
-/* Reel nodes 5/6 in by length_mm and wait for both to finish.
-   1 = done, 0 = a spool was still busy after string_chunk_timeout_ms. */
-uint8_t String2_ReelIn(float length_mm)
-{
-  if (length_mm <= 0.05f) return 1;
-  String2_Move(-length_mm);
-  if (!String_WaitIdle(string2_node_up,   string_chunk_timeout_ms) ||
-      !String_WaitIdle(string2_node_down, string_chunk_timeout_ms)) return 0;
-  string2_paid_mm -= length_mm;
-  return 1;
 }
 
 /* ==================================================================== */
@@ -414,29 +328,12 @@ volatile uint8_t  joint_home_state      = 0;
 volatile uint8_t  joint_homed           = 0;
 volatile uint32_t joint_home_ms         = 0;
 
-/* ---- RT_SPEED stall fallback - small slider (nodes 5/6) ONLY ----------
-   Bench-observed: the small slider's open-loop stall bit (0x6017) does not
-   reliably trip at the mechanical stop - the current reading actually DROPS
-   as it approaches the stop rather than rising, so PUSI_ST_STALLED never
-   fires and the tendon just keeps sliding. As a fallback, also watch
-   RT_SPEED (0x6030): if a motor's measured speed stays near zero for
-   string2_stall_stuck_n polls in a row, treat that as stalled too -
-   independent of whatever the drive itself reports. Same idea as
-   SDM_Home()'s "stop found by the angle no longer advancing".
-   Opt-in via Pair_TensionHome()'s speed_fallback argument - ONLY
-   init_small_slider() enables it. Nodes 3/4 and the arm_state 1/2 startup
-   home are unaffected. */
-volatile int32_t  string2_stall_speed_pps = 5;    // |RT_SPEED| below this = "not moving" [pps]
-volatile uint8_t  string2_stall_stuck_n   = 5;    // consecutive not-moving polls (~10ms apart) = stalled
-volatile uint16_t string2_stall_grace_n   = 50;   // ignore the detector for this many polls after start (~0.5s)
-
 /* ---- RT_SPEED-confirmed stall - joint-forming pair, DOWN node only ----
    Bench-observed: node 4 (string_node_down) consistently trips its
    open-loop stall bit EARLIER than node 3, before the tendon is actually
-   taut, leaving that side slightly slack and tilting the slider up. This is
-   the opposite problem from the small slider above (over-triggering, not
-   under-triggering), so the fix runs the other way: when node 4's stall
-   bit trips, don't accept it immediately - clear the fault and keep
+   taut, leaving that side slightly slack and tilting the slider up. So
+   when node 4's stall bit trips, don't accept it immediately - clear the
+   fault and keep
    pulling, only accepting the stop once RT_SPEED ALSO confirms near-zero
    speed for a sustained stretch. Capped at string_down_confirm_max_retries
    clear-and-resume attempts so a genuine jam can't retry forever - once
@@ -448,18 +345,13 @@ volatile uint16_t string_down_confirm_grace_n     = 50;  // ignore the confirm c
 volatile uint8_t  string_down_confirm_max_retries = 3;   // give up and accept the drive's stall bit after this many
 
 /* ---- Pair_TensionHome readbacks (Ozone) -------------------------------
-   For the arm_state 13 "motor never stops" investigation. [0] = up node,
-   [1] = down node of whichever pair is homing. th_active stays 1 while the
-   seek loop runs: if it is still 1 after the slider has locked, the loop
-   never saw a stop, and th_status / th_speed / th_pos show which signal
-   failed to change. Speed and position are only read on the small-slider
-   call (speed_fallback), so other homes keep their timing. */
+   [0] = up node, [1] = down node. th_active stays 1 while the seek loop
+   runs: if it is still 1 after the slider has locked, the loop never saw a
+   stop, and th_status shows which drive failed to report one. */
 volatile uint8_t  th_active    = 0;
 volatile uint8_t  th_node[2]   = { 0, 0 };
 volatile uint8_t  th_done[2]   = { 0, 0 };
 volatile uint8_t  th_status[2] = { 0, 0 };   // last 0x6001 read (bit2 = stalled)
-volatile int32_t  th_speed[2]  = { 0, 0 };   // last RT_SPEED (0x6030) read
-volatile int32_t  th_pos[2]    = { 0, 0 };   // last motor position (0x600C) read
 volatile uint32_t th_loops     = 0;          // seek-loop passes so far
 
 /* Law of cosines - the tendon is a chord, not a wrap. */
@@ -472,14 +364,12 @@ float Joint_TendonLen(float phi_deg)
 }
 
 static uint8_t Pair_TensionHome(uint8_t nu, uint8_t nd, uint32_t timeout_ms,
-                                uint8_t speed_fallback, uint8_t confirm_down_stall)
+                                uint8_t confirm_down_stall)
 {
   const uint8_t n[2] = { nu, nd };
   uint8_t  done[2]  = { 0, 0 };
-  uint8_t  stuck[2] = { 0, 0 };   /* consecutive near-zero RT_SPEED polls, per motor (speed_fallback) */
   uint8_t  ok = 1;
   uint32_t t0 = HAL_GetTick();
-  uint16_t poll = 0;              /* loop passes since start - grace window gate (speed_fallback) */
 
   /* Per-motor "is this stall real" state - only meaningful for
      n[i] == string_node_down when confirm_down_stall is set. */
@@ -497,7 +387,7 @@ static uint8_t Pair_TensionHome(uint8_t nu, uint8_t nd, uint32_t timeout_ms,
    for (int i = 0; i < 2; i++) {
     int32_t speed = (int32_t)joint_home_pps;
 
-    if (n[i] == string_node_down || n[i] == string2_node_up) {
+    if (n[i] == string_node_down) {
       speed = -speed;
     }
 
@@ -521,7 +411,7 @@ static uint8_t Pair_TensionHome(uint8_t nu, uint8_t nd, uint32_t timeout_ms,
                below - a repeat stall trip just resets this same retry. */
             PUSI_ClearStall(n[i]);
             int32_t speed = (int32_t)joint_home_pps;
-            if (n[i] == string_node_down || n[i] == string2_node_up) speed = -speed;
+            if (n[i] == string_node_down) speed = -speed;
             (void)PUSI_SetSpeed(n[i], speed);
             confirming[i]      = 1;
             confirm_stuck[i]   = 0;
@@ -534,35 +424,6 @@ static uint8_t Pair_TensionHome(uint8_t nu, uint8_t nd, uint32_t timeout_ms,
           }
         } else {
           t0 = HAL_GetTick();
-        }
-      }
-      if (done[i]) continue;
-
-      /* Fallback (small slider only - see string2_stall_* above): the
-         drive's own stall bit isn't reliable here, so also declare stalled
-         if RT_SPEED sits near zero for string2_stall_stuck_n polls in a
-         row, once past the startup grace window. */
-      if (speed_fallback) {
-        int32_t pos;
-        if (PUSI_SdoRead(n[i], PUSI_OBJ_MOTOR_POS, 0, &pos) == HAL_OK) th_pos[i] = pos;
-      }
-      if (speed_fallback) {
-        int32_t spd;
-        if (PUSI_ReadSpeed(n[i], &spd) == HAL_OK) {
-          th_speed[i] = spd;
-          if (spd < 0) spd = -spd;
-          if (poll < string2_stall_grace_n) {
-            /* still inside the startup grace window - readback only */
-          } else if (spd < string2_stall_speed_pps) {
-            if (stuck[i] < 255u) stuck[i]++;
-            if (stuck[i] >= string2_stall_stuck_n) {
-              PUSI_Stop(n[i]);
-              (void)PUSI_SdoWrite(n[i], PUSI_OBJ_SPEED, 0, 0u, 4);
-              done[i] = 1;
-            }
-          } else {
-            stuck[i] = 0;
-          }
         }
       }
       if (done[i]) continue;
@@ -597,7 +458,6 @@ static uint8_t Pair_TensionHome(uint8_t nu, uint8_t nd, uint32_t timeout_ms,
       ok = 0;
       break;
     }
-    if (poll < 0xFFFFu) poll++;
     HAL_Delay(10);
   }
   th_active = 0;
@@ -624,7 +484,7 @@ void Joint_HomeSpools(void)
   joint_homed      = 0;
 
   uint8_t ok = Pair_TensionHome(string_node_up, string_node_down,
-                                joint_home_timeout_ms, 0, 0);
+                                joint_home_timeout_ms, 0);
   joint_home_ms = HAL_GetTick() - t0;
 
   string_paid_mm   = 0.0f;
@@ -635,22 +495,18 @@ void Joint_HomeSpools(void)
   joint_homed      = ok;
 }
 
-/* TASK 1 - arm_state 1. Tension-home BOTH pairs so every tendon is in a
-   known physical state before reaching starts. Sequential, not parallel:
-   two pairs stalling at once draws heavy current and the seek loops would
-   contend for the bus. Blocks up to 2 x joint_home_timeout_ms.        */
-void String_InitBothPairs(void)
+/* arm_state 2. Tension-home the slider tendons (nodes 3/4) so they are in
+   a known physical state before reaching starts. Blocks up to
+   joint_home_timeout_ms.                                              */
+void String_InitTendons(void)
 {
   /* confirm_down_stall=1: node 4 was observed tripping its stall bit early
      here, tilting the slider - see string_down_confirm_* above. */
-  (void)Pair_TensionHome(string_node_up,  string_node_down,  joint_home_timeout_ms, 0, 1);
-  (void)Pair_TensionHome(string2_node_up, string2_node_down, joint_home_timeout_ms, 0, 0);
+  (void)Pair_TensionHome(string_node_up, string_node_down, joint_home_timeout_ms, 1);
 
   string_paid_mm    = 0.0f;     /* taut = the payout reference is zero */
-  string2_paid_mm   = 0.0f;
   string_init_done  = 0;        /* force a fresh config on first move  */
-  string2_init_done = 0;
-  Base_CompReset();             /* all four tendons taut at this base angle */
+  Base_CompReset();             /* both tendons taut at this base angle */
 }
 
 /* TASK 2 - arm_state 10. Initialise nodes 3/4, pull them taut, then reset
@@ -658,27 +514,12 @@ void String_InitBothPairs(void)
 void Inite_joint_forming(void)
 {
   String_PmcInit();
-  (void)Pair_TensionHome(string_node_up, string_node_down, joint_home_timeout_ms, 0, 0);
+  (void)Pair_TensionHome(string_node_up, string_node_down, joint_home_timeout_ms, 0);
 
   string_paid_mm = 0.0f;
   joint_phi_deg  = joint_phi_home_deg;
   joint_X_mm     = Joint_TendonLen(joint_phi_deg);
   Base_CompReset();             /* base compensation starts fresh too */
-}
-
-/* TASK 3 - end-of-round small-slider init. Tension-home nodes 5/6 ONLY:
-   pull back until each side stalls (a stall on one does not stop the
-   other - it keeps pulling until it stalls too), then clear stall/error
-   status on both. Call this AFTER Inite_joint_forming() - the small slider
-   pulls back until it physically locks against the (already taut)
-   joint-forming slider, so 3/4 must be tensioned first. */
-void init_small_slider(void)
-{
-  (void)Pair_TensionHome(string2_node_up, string2_node_down, joint_home_timeout_ms, 1, 0);
-
-  string2_paid_mm   = 0.0f;     /* taut = the payout reference is zero */
-  string2_init_done = 0;        /* force a fresh config on first move  */
-  Base_CompSyncS2();            /* 5/6 are now taut at the current base angle */
 }
 
 static void Joint_Differential(float motor_deg, int8_t pull);
@@ -801,12 +642,6 @@ volatile float    base_th0_up        = -86.4f;   /* node 3 anchor at base 0 */
 volatile float    base_th0_down      = 168.3f;   /* node 4 anchor at base 0 */
 volatile int8_t   joint_base_sense   = +1;       /* flip if it corrects backwards */
 
-/* Nodes 5/6 (section-forming slider tendons) cross the same base joint. No
-   CAD anchor angles for them yet, so they default to the 3/4 values (5
-   routed like 3, 6 like 4) - replace with the measured ones. */
-volatile float    base_th0_s2_up     = -86.4f;   /* node 5 anchor at base 0 */
-volatile float    base_th0_s2_down   = 168.3f;   /* node 6 anchor at base 0 */
-
 /* Base angle the tendons were last tensioned at. Length changes are
    measured from here, not from base 0, so a home done with the base parked
    a few degrees off 0 does not leave a built-in error. */
@@ -814,12 +649,8 @@ volatile float    base_ref_deg       = 0.0f;
 volatile float    joint_base_deg     = 0.0f;     /* base angle applied so far */
 volatile float    base_need_up       = 0.0f;     /* length actually moved so far [mm] */
 volatile float    base_need_down     = 0.0f;
-volatile float    base_need_s2_up    = 0.0f;
-volatile float    base_need_s2_down  = 0.0f;
 volatile float    base_do_up         = 0.0f;     /* owed this pass [mm] */
 volatile float    base_do_down       = 0.0f;
-volatile float    base_do_s2_up      = 0.0f;
-volatile float    base_do_s2_down    = 0.0f;
 volatile uint32_t joint_base_moves   = 0;
 
 /* Straight-line tendon length for an anchor at th [deg] on the circle. */
@@ -847,7 +678,7 @@ static float Base_NowDeg(void)
   return 0.0f;
 }
 
-/* All four tendons have just been tensioned at the current base angle. */
+/* Both tendons have just been tensioned at the current base angle. */
 void Base_CompReset(void)
 {
   float now = Base_NowDeg();
@@ -855,17 +686,6 @@ void Base_CompReset(void)
   joint_base_deg    = now;
   base_need_up      = 0.0f;
   base_need_down    = 0.0f;
-  base_need_s2_up   = 0.0f;
-  base_need_s2_down = 0.0f;
-}
-
-/* Only nodes 5/6 were just tensioned: count them as already compensated for
-   the current angle, so the next move does not re-apply that change. */
-void Base_CompSyncS2(void)
-{
-  float now = Base_NowDeg();
-  base_need_s2_up   = Base_Owed(base_th0_s2_up,   now);
-  base_need_s2_down = Base_Owed(base_th0_s2_down, now);
 }
 
 /* Move ONE spool. + = pay out, - = reel in. Returns the length the drive
@@ -909,8 +729,8 @@ static uint8_t Base_CompOne(uint8_t node, int8_t dir, float th0, float base_deg,
 }
 
 /* Path grew -> pay that spool out; shrank -> reel it in. Payout senses are
-   the same bench-checked string_dir_* / string2_dir_* used by the fill, so a
-   positive length always RELEASES tendon. */
+   the same bench-checked string_dir_* used by the fill, so a positive
+   length always RELEASES tendon. */
 void Joint_CompensateBase(float base_deg)
 {
   if (!joint_base_comp) { joint_base_deg = base_deg; return; }
@@ -924,14 +744,6 @@ void Joint_CompensateBase(float base_deg)
                      &base_need_up,   &base_do_up,   &string_err_up,   &string_spd_up);
   ok &= Base_CompOne(string_node_down, string_dir_down, base_th0_down, base_deg,
                      &base_need_down, &base_do_down, &string_err_down, &string_spd_down);
-
-  if (string2_enable) {
-    if (!string2_init_done) String2_Init();
-    ok &= Base_CompOne(string2_node_up,   string2_dir_up,   base_th0_s2_up,   base_deg,
-                       &base_need_s2_up,   &base_do_s2_up,   &string2_err_up,   &string2_spd_up);
-    ok &= Base_CompOne(string2_node_down, string2_dir_down, base_th0_s2_down, base_deg,
-                       &base_need_s2_down, &base_do_s2_down, &string2_err_down, &string2_spd_down);
-  }
 
   if (ok) joint_base_deg = base_deg;               /* else retry next call */
   joint_base_moves++;

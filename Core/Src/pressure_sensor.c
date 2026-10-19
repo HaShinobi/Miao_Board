@@ -14,6 +14,7 @@ volatile float    pressure_value = 0.0f;
 volatile int16_t  pressure_tip_raw = 0;      // end-tip, address 2
 volatile float    pressure_tip_value = 0.0f;
 volatile uint8_t  pressure_tip_enable = 1;   // 0 = skip the tip poll (sensor not fitted)
+volatile uint32_t pressure_tip_tick = 0;     // HAL tick of the last good tip reading
 
 volatile uint8_t  sensor_state = 0;
 volatile uint32_t sensor_error_cnt = 0;      // base: no/bad reply count
@@ -98,27 +99,23 @@ static uint8_t Sensor_ReadRaw(uint8_t addr, uint16_t *raw_out)
     return 1;
 }
 
-/* 低通滤波: 新值 = 70%旧值 + 30%新读数. Out-of-range values are dropped
-   and the last value kept. */
-static uint8_t Sensor_Filter(PressureFilter_t *f, uint16_t raw)
+/* 低通滤波: 新值 = 70%旧值 + 30%新读数 */
+static void Sensor_Filter(PressureFilter_t *f, float new_value)
 {
-    if (raw > 5000) return 0;
-
-    float new_value = raw * 0.1f;
     if (f->first_reading) {
         f->filtered = new_value;
         f->first_reading = 0;
     } else {
         f->filtered = 0.7f * f->filtered + 0.3f * new_value;
     }
-    return 1;
 }
 
 /* 读取一次基座压力值 (address 1) -> pressure_value */
 void Sensor_ReadOnce(void)
 {
     uint16_t raw;
-    if (Sensor_ReadRaw(PRESSURE_ADDR_BASE, &raw) && Sensor_Filter(&filt_base, raw)) {
+    if (Sensor_ReadRaw(PRESSURE_ADDR_BASE, &raw) && raw <= 5000) {   /* 不合理的值直接丢弃 */
+        Sensor_Filter(&filt_base, raw * 0.1f);
         pressure_raw = raw;
         pressure_value = filt_base.filtered;
     } else {
@@ -131,13 +128,29 @@ void Sensor_ReadTip(void)
 {
     if (!pressure_tip_enable) return;
 
+    /* Signed (datasheet: 16-bit signed): the tip is pumped out to keep it
+       flat, so it can sit slightly below zero - that must read as negative,
+       not be dropped and leave a stale positive value behind. */
     uint16_t raw;
-    if (Sensor_ReadRaw(PRESSURE_ADDR_TIP, &raw) && Sensor_Filter(&filt_tip, raw)) {
-        pressure_tip_raw = raw;
+    int16_t  sraw;
+    if (Sensor_ReadRaw(PRESSURE_ADDR_TIP, &raw) &&
+        (sraw = (int16_t)raw) >= -1000 && sraw <= 5000) {
+        Sensor_Filter(&filt_tip, sraw * 0.1f);
+        pressure_tip_raw = sraw;
         pressure_tip_value = filt_tip.filtered;
+        pressure_tip_tick = HAL_GetTick();
     } else {
         sensor_tip_error_cnt++;
     }
+}
+
+/* 1 if the tip reading is live (a good reply within the last second). The
+   tip pump logic only acts on a live reading - with the sensor unplugged
+   pressure_tip_value would sit at its last value forever. */
+uint8_t Sensor_TipFresh(void)
+{
+    return pressure_tip_enable && pressure_tip_tick != 0u &&
+           (HAL_GetTick() - pressure_tip_tick) < 1000u;
 }
 
 void Sensor_Init(void)
