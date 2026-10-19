@@ -65,7 +65,7 @@ DMA_HandleTypeDef hdma_usart3_rx;
 
 /* Bump on every change and check it in Ozone - a stale flash is the
    commonest false test result. */
-volatile uint32_t g_build_tag = 0x261019AA;
+volatile uint32_t g_build_tag = 0x261019AB;
 
 volatile uint8_t program_state = 0;
 volatile uint8_t last_program_state = 0;
@@ -282,7 +282,8 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    Sensor_ReadOnce();    // Read pressure every loop iteration (~200 ms period)
+    Sensor_ReadOnce();    // Base pressure (RS485-U3 addr 1), every loop (~200 ms period)
+    Sensor_ReadTip();     // End-tip pressure (RS485-U3 addr 2)
 
     Arm_StartupHoming();     // one-shot servo home when arm_state 1 is reached
 
